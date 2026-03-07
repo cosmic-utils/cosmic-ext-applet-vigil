@@ -181,6 +181,11 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let (_, panel_h) = self.core.applet.suggested_window_size();
+        #[allow(clippy::cast_precision_loss)]
+        let diameter = panel_h.get() as f32;
+        let radius = diameter / 2.0;
+
         let icon = widget::icon(widget::icon::from_svg_bytes(BOLT_SVG).symbolic(true))
             .width(Length::Fixed(18.0))
             .height(Length::Fixed(18.0));
@@ -191,7 +196,7 @@ impl cosmic::Application for AppModel {
             cosmic::iced::Color::TRANSPARENT
         };
 
-        let mut row = widget::row().push(icon).spacing(8).align_y(Alignment::Center);
+        let mut row = widget::row().push(icon).align_y(Alignment::Center);
 
         if self.active {
             if self.is_indefinite() {
@@ -203,14 +208,27 @@ impl cosmic::Application for AppModel {
             } else {
                 row = row.push(widget::text(self.format_remaining()).size(14.0));
             }
+            row = row.spacing(4);
         }
 
         let content = widget::container(row)
-            .padding([4, 8])
-            .style(move |theme: &Theme| container::Style {
+            .height(Length::Fixed(diameter))
+            .width(if self.active {
+                Length::Shrink
+            } else {
+                Length::Fixed(diameter)
+            })
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .padding(if self.active {
+                [0.0, radius / 2.0]
+            } else {
+                [0.0, 0.0]
+            })
+            .style(move |_theme: &Theme| container::Style {
                 background: Some(bg_color.into()),
                 border: cosmic::iced::Border {
-                    radius: theme.cosmic().corner_radii.radius_xl.into(),
+                    radius: radius.into(),
                     ..Default::default()
                 },
                 ..container::Style::default()
