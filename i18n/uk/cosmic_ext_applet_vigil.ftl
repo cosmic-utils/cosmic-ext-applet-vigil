@@ -1,7 +1,7 @@
 app-title = Зміна
 active = Увімкнено
 inactive = Вимкнено
-activate = Увімкнути
-deactivate = Вимкнути
+activate = Розпочати
+deactivate = Завершити
 duration = Тривалість
-indefinite = Безстроково
+indefinite = До завершення
