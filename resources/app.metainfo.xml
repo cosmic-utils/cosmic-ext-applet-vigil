@@ -5,7 +5,9 @@
   <project_license>MPL-2.0</project_license>
   <project_group>COSMIC</project_group>
   <name>Vigil</name>
+  <name xml:lang="uk">Зміна</name>
   <summary>Keep your screen awake — a vigil applet for the COSMIC desktop</summary>
+  <summary xml:lang="uk">Не дає екрану заснути — віджет «Зміна» для COSMIC</summary>
 
   <developer id="com.github.bgub">
     <name>bgub</name>
@@ -18,6 +20,10 @@
     <p>A screen wake-lock applet for the COSMIC desktop environment. Prevent your
       display from dimming or sleeping with a single click from the panel.</p>
   </description>
+  <description xml:lang="uk">
+    <p>Віджет для середовища COSMIC, який запобігає автоматичному призупиненню пристрою,
+      затемненню екрана або запуску заставки. Імітує активність користувача.</p>
+  </description>
 
   <launchable type="desktop-id">com.github.bgub.CosmicExtAppletVigil.desktop</launchable>
 
@@ -27,6 +33,7 @@
     <screenshot type="default">
       <image>https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-applet-vigil/main/screenshot.png</image>
       <caption>Vigil applet on the COSMIC panel</caption>
+      <caption xml:lang="uk">Розміщений віджет на панелі.</caption>
     </screenshot>
   </screenshots>
 

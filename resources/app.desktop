@@ -1,6 +1,8 @@
 [Desktop Entry]
 Name=Vigil
+Name[uk]=Зміна
 Comment=Keep your screen awake — a vigil applet for the COSMIC desktop
+Comment[uk]=Не дає екрану заснути — віджет «Зміна» для COSMIC
 Type=Application
 Icon=com.github.bgub.CosmicExtAppletVigil
 Exec=cosmic-ext-applet-vigil
@@ -8,6 +10,7 @@ Terminal=false
 StartupNotify=true
 Categories=COSMIC
 Keywords=COSMIC;vigil;caffeine;screen;awake;inhibit
+Keywords[uk]=COSMIC;КОСМІК;зміна;кофеїн;кафеїн;caffeine;екран;неспання;
 NoDisplay=true
 X-CosmicApplet=true
 X-CosmicHoverPopup=Auto
