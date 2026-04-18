@@ -19,9 +19,7 @@
   <description>
     <p>A screen wake-lock applet for the COSMIC desktop environment. Prevent your
       display from dimming or sleeping with a single click from the panel.</p>
-  </description>
-  <description xml:lang="uk">
-    <p>Віджет для середовища COSMIC, який запобігає автоматичному призупиненню пристрою,
+    <p xml:lang="uk">Віджет для середовища COSMIC, який запобігає автоматичному призупиненню пристрою,
       затемненню екрана або запуску заставки. Імітує активність користувача.</p>
   </description>
 
