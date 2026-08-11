@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 use crate::fl;
@@ -15,21 +15,28 @@ use cosmic::widget::{self, container};
 const BOLT_SVG: &[u8] = include_bytes!("../resources/bolt.svg");
 const INFINITY_SVG: &[u8] = include_bytes!("../resources/infinity.svg");
 
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 #[derive(Default)]
 pub struct AppModel {
     core: cosmic::Core,
     popup: Option<Id>,
     config: Config,
     config_handler: Option<cosmic_config::Config>,
-    active: bool,
-    remaining_secs: u32,
     inhibit_conn: Option<zbus::blocking::Connection>,
     inhibit_cookie: Option<u32>,
 }
 
 impl Drop for AppModel {
     fn drop(&mut self) {
-        self.deactivate();
+        // Release only this instance's inhibit. Deliberately does not touch the
+        // shared config: one panel instance exiting must not turn Vigil off on
+        // the others.
+        self.release_inhibit();
     }
 }
 
@@ -45,14 +52,37 @@ pub enum Message {
 }
 
 impl AppModel {
-    fn activate(&mut self, duration_mins: u32) {
-        self.deactivate();
+    /// Whether Vigil is on. Shared by every panel instance via config.
+    fn active(&self) -> bool {
+        self.config.active
+    }
+
+    /// Seconds left before expiry; zero when indefinite or inactive.
+    ///
+    /// Derived from the shared deadline rather than counted down locally, so
+    /// each monitor's instance shows the same value.
+    fn remaining_secs(&self) -> u32 {
+        if !self.config.active || self.config.expiry_ts == 0 {
+            return 0;
+        }
+        u32::try_from(self.config.expiry_ts.saturating_sub(now_secs())).unwrap_or(u32::MAX)
+    }
+
+    /// Take a screensaver inhibit for this instance. Does not touch config.
+    ///
+    /// Every instance holds its own inhibit. `cosmic-idle` keeps inhibitors in
+    /// a list and only lets the screen sleep once all of them are gone, so the
+    /// duplication is harmless and avoids electing a single owner process.
+    fn acquire_inhibit(&mut self) -> bool {
+        if self.inhibit_cookie.is_some() {
+            return true;
+        }
 
         let conn = match zbus::blocking::Connection::session() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("failed to connect to session bus: {e}");
-                return;
+                return false;
             }
         };
 
@@ -69,18 +99,22 @@ impl AppModel {
                 Ok(cookie) => {
                     self.inhibit_conn = Some(conn);
                     self.inhibit_cookie = Some(cookie);
-                    self.active = true;
-                    self.remaining_secs = duration_mins * 60;
-                    self.config.duration_mins = duration_mins;
-                    self.save_config();
+                    true
                 }
-                Err(e) => eprintln!("failed to parse Inhibit reply: {e}"),
+                Err(e) => {
+                    eprintln!("failed to parse Inhibit reply: {e}");
+                    false
+                }
             },
-            Err(e) => eprintln!("failed to call ScreenSaver.Inhibit: {e}"),
+            Err(e) => {
+                eprintln!("failed to call ScreenSaver.Inhibit: {e}");
+                false
+            }
         }
     }
 
-    fn deactivate(&mut self) {
+    /// Drop this instance's inhibit. Does not touch config.
+    fn release_inhibit(&mut self) {
         if let (Some(conn), Some(cookie)) = (self.inhibit_conn.take(), self.inhibit_cookie.take()) {
             let _ = conn.call_method(
                 Some("org.freedesktop.ScreenSaver"),
@@ -90,19 +124,54 @@ impl AppModel {
                 &(cookie,),
             );
         }
-        self.active = false;
-        self.remaining_secs = 0;
+    }
+
+    /// Bring this instance's inhibit in line with the shared flag.
+    ///
+    /// Used when another monitor's instance toggled Vigil. Never writes config,
+    /// which is what stops two instances from echoing updates back and forth.
+    fn sync_inhibit(&mut self) {
+        if self.config.active {
+            self.acquire_inhibit();
+        } else {
+            self.release_inhibit();
+        }
+    }
+
+    /// Turn Vigil on in response to a user action, and publish that to the
+    /// other instances.
+    fn activate(&mut self, duration_mins: u32) {
+        if !self.acquire_inhibit() {
+            return;
+        }
+        self.config.duration_mins = duration_mins;
+        self.config.active = true;
+        self.config.expiry_ts = if duration_mins == 0 {
+            0
+        } else {
+            now_secs() + u64::from(duration_mins) * 60
+        };
+        self.save_config();
+    }
+
+    /// Turn Vigil off in response to a user action or expiry, and publish that
+    /// to the other instances.
+    fn deactivate(&mut self) {
+        self.release_inhibit();
+        self.config.active = false;
+        self.config.expiry_ts = 0;
+        self.save_config();
     }
 
     fn is_indefinite(&self) -> bool {
-        self.active && self.config.duration_mins == 0
+        self.active() && self.config.duration_mins == 0
     }
 
     fn format_remaining(&self) -> String {
         if self.is_indefinite() {
             "\u{221e}".to_string()
         } else {
-            let mins = self.remaining_secs.div_ceil(60);
+            let mins = self.remaining_secs().div_ceil(60);
             format!("{mins}")
         }
     }
@@ -111,7 +180,7 @@ impl AppModel {
         if self.is_indefinite() {
             fl!("indefinite")
         } else {
-            let secs = self.remaining_secs;
+            let secs = self.remaining_secs();
             format!("{:02}:{:02}", secs / 60, secs % 60)
         }
     }
@@ -174,16 +243,25 @@ impl cosmic::Application for AppModel {
                 Err(_) => (Config::default(), None),
             };
 
-        let app = AppModel {
+        let mut app = AppModel {
             core,
             config,
             config_handler,
             popup: None,
-            active: false,
-            remaining_secs: 0,
             inhibit_conn: None,
             inhibit_cookie: None,
         };
+
+        // Adopt whatever state is already shared. This covers an instance
+        // starting late (a monitor plugged in while Vigil is on) and
+        // `cosmic-panel` respawning an applet it killed.
+        if app.config.active {
+            if app.config.expiry_ts != 0 && now_secs() >= app.config.expiry_ts {
+                app.deactivate();
+            } else {
+                app.sync_inhibit();
+            }
+        }
 
         (app, Task::none())
     }
@@ -202,7 +280,7 @@ impl cosmic::Application for AppModel {
             .width(Length::Fixed(18.0))
             .height(Length::Fixed(18.0));
 
-        let bg_color = if self.active {
+        let bg_color = if self.active() {
             Self::active_color_muted()
         } else {
             cosmic::iced::Color::TRANSPARENT
@@ -210,7 +288,7 @@ impl cosmic::Application for AppModel {
 
         let mut row = widget::row().push(icon).align_y(Alignment::Center);
 
-        if self.active {
+        if self.active() {
             if self.is_indefinite() {
                 row = row.push(
                     widget::icon(widget::icon::from_svg_bytes(INFINITY_SVG).symbolic(true))
@@ -223,19 +301,19 @@ impl cosmic::Application for AppModel {
             row = row.spacing(4);
         }
 
-        let active = self.active;
+        let active = self.active();
         let pill_height = diameter * 0.8;
         let pill_radius = pill_height / 2.0;
         let content = widget::container(row)
-            .height(Length::Fixed(if self.active { pill_height } else { diameter }))
-            .width(if self.active {
+            .height(Length::Fixed(if active { pill_height } else { diameter }))
+            .width(if active {
                 Length::Shrink
             } else {
                 Length::Fixed(diameter)
             })
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
-            .padding(if self.active {
+            .padding(if active {
                 [0.0, pill_radius / 2.0]
             } else {
                 [0.0, 0.0]
@@ -262,13 +340,13 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let status_text = if self.active {
+        let status_text = if self.active() {
             fl!("active")
         } else {
             fl!("inactive")
         };
 
-        let status_color = if self.active {
+        let status_color = if self.active() {
             Self::active_color_muted()
         } else {
             cosmic::iced::Color::from_rgba(1.0, 1.0, 1.0, 0.08)
@@ -277,7 +355,7 @@ impl cosmic::Application for AppModel {
         let status_row = widget::row()
             .push(widget::text::heading(status_text))
             .push(widget::space().width(Length::Fill))
-            .push_maybe(if self.active {
+            .push_maybe(if self.active() {
                 Some(widget::text::heading(self.format_remaining_full()))
             } else {
                 None
@@ -290,7 +368,7 @@ impl cosmic::Application for AppModel {
             .style(colored_bg(status_color, 12.0));
 
         // Duration preset buttons
-        let active_mins = if self.active {
+        let active_mins = if self.active() {
             Some(self.config.duration_mins)
         } else {
             None
@@ -352,7 +430,7 @@ impl cosmic::Application for AppModel {
                 .map(|update| Message::UpdateConfig(update.config)),
         ];
 
-        if self.active && !self.is_indefinite() {
+        if self.active() && !self.is_indefinite() {
             struct TimerTick;
             subs.push(Subscription::run_with(
                 std::any::TypeId::of::<TimerTick>(),
@@ -373,7 +451,7 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::ToggleVigil => {
-                if self.active {
+                if self.active() {
                     self.deactivate();
                 } else {
                     let duration = self.config.duration_mins;
@@ -387,14 +465,15 @@ impl cosmic::Application for AppModel {
                 self.deactivate();
             }
             Message::Tick => {
-                if self.remaining_secs > 0 {
-                    self.remaining_secs -= 1;
-                } else {
+                // Only drives the countdown redraw; the deadline itself lives
+                // in config, so both instances expire at the same moment.
+                if self.remaining_secs() == 0 {
                     self.deactivate();
                 }
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
+                self.sync_inhibit();
             }
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
