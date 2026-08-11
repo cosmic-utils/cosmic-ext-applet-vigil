@@ -143,6 +143,39 @@ fn colored_bg(color: cosmic::iced::Color, radius: f32) -> impl Fn(&Theme) -> con
     }
 }
 
+/// Accent outline marking the selected duration while Vigil is idle.
+///
+/// Deliberately distinct from `Button::Suggested`'s filled accent, which is
+/// reserved for the preset that is actually running: an outline reads as
+/// "this is what will start" rather than "this is running now".
+fn selected_outline() -> cosmic::theme::Button {
+    fn base(theme: &Theme) -> widget::button::Style {
+        let cosmic = theme.cosmic();
+        widget::button::Style {
+            border_radius: cosmic.corner_radii.radius_xl.into(),
+            border_width: 2.0,
+            border_color: cosmic.accent.base.into(),
+            text_color: Some(cosmic.accent_text_color().into()),
+            icon_color: Some(cosmic.accent_text_color().into()),
+            ..widget::button::Style::new()
+        }
+    }
+
+    fn filled(theme: &Theme, color: cosmic::iced::Color) -> widget::button::Style {
+        widget::button::Style {
+            background: Some(color.into()),
+            ..base(theme)
+        }
+    }
+
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_focused, theme| base(theme)),
+        disabled: Box::new(base),
+        hovered: Box::new(|_focused, theme| filled(theme, theme.cosmic().button.hover.into())),
+        pressed: Box::new(|_focused, theme| filled(theme, theme.cosmic().button.pressed.into())),
+    }
+}
+
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
     type Flags = ();
@@ -289,41 +322,46 @@ impl cosmic::Application for AppModel {
             .padding([10, 16])
             .style(colored_bg(status_color, 12.0));
 
-        // Duration preset buttons
-        let active_mins = if self.active {
-            Some(self.config.duration_mins)
-        } else {
-            None
-        };
-        let dur_btn = |mins: u32, label: &'static str| {
-            if active_mins == Some(mins) {
-                widget::button::suggested(label)
-                    .on_press(Message::Deactivate)
-                    .width(Length::Fill)
+        // Duration presets. The selected preset is always marked, so the popup
+        // shows which duration will be used before Vigil is started rather than
+        // only once it is running.
+        let selected_mins = self.config.duration_mins;
+        let running = self.active;
+
+        let preset_class = |mins: u32| {
+            if selected_mins != mins {
+                cosmic::theme::Button::Standard
+            } else if running {
+                cosmic::theme::Button::Suggested
             } else {
-                widget::button::standard(label)
-                    .on_press(Message::Activate(mins))
-                    .width(Length::Fill)
+                selected_outline()
             }
         };
 
-        let infinity_msg = if active_mins == Some(0) {
-            Message::Deactivate
-        } else {
-            Message::Activate(0)
+        // Pressing the running preset stops Vigil. Every other press starts it
+        // with that duration, which also covers switching duration mid-run.
+        let preset_msg = |mins: u32| {
+            if selected_mins == mins && running {
+                Message::Deactivate
+            } else {
+                Message::Activate(mins)
+            }
         };
-        let infinity_class = if active_mins == Some(0) {
-            cosmic::theme::Button::Suggested
-        } else {
-            cosmic::theme::Button::Standard
+
+        let dur_btn = |mins: u32, label: &'static str| {
+            widget::button::standard(label)
+                .on_press(preset_msg(mins))
+                .width(Length::Fill)
+                .class(preset_class(mins))
         };
+
         let infinity_btn = widget::button::custom(
             widget::text("\u{221e}").size(26.0).line_height(0.8).center(),
         )
         .padding([6, 12])
-        .on_press(infinity_msg)
+        .on_press(preset_msg(0))
         .width(Length::Shrink)
-        .class(infinity_class);
+        .class(preset_class(0));
 
         let duration_row = widget::row()
             .push(dur_btn(15, "15m"))
@@ -428,5 +466,39 @@ impl cosmic::Application for AppModel {
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The custom style closures run inside the renderer; a panic or a deadlock
+    /// on the global THEME lock would take the applet down on popup open.
+    #[test]
+    fn selected_outline_styles_resolve() {
+        let theme = Theme::default();
+        let cosmic::theme::Button::Custom {
+            active,
+            disabled,
+            hovered,
+            pressed,
+        } = selected_outline()
+        else {
+            panic!("expected a Custom button style");
+        };
+
+        for style in [active(false, &theme), active(true, &theme), disabled(&theme)] {
+            assert_eq!(style.border_width, 2.0);
+        }
+        for style in [
+            hovered(false, &theme),
+            pressed(false, &theme),
+            hovered(true, &theme),
+            pressed(true, &theme),
+        ] {
+            assert!(style.background.is_some(), "hover/press should fill");
+            assert_eq!(style.border_width, 2.0, "outline persists on hover/press");
+        }
     }
 }
