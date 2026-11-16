@@ -36,6 +36,7 @@
   </screenshots>
 
   <provides>
+    <id>com.system76.CosmicApplet</id>
     <binary>cosmic-ext-applet-vigil</binary>
   </provides>
 
